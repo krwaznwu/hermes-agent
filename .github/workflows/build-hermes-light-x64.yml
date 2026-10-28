@@ -1,0 +1,81 @@
+name: Build Hermes Desktop Light (macOS Intel)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hermes-light-macos-x64-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Hermes Light macOS x64
+    runs-on: macos-15-intel
+    timeout-minutes: 180
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Show native build host
+        run: |
+          set -euo pipefail
+          uname -m
+          sw_vers
+          python3 --version
+
+      - name: Build unsigned Hermes Desktop Light
+        run: scripts/build-bundle.sh --variant light
+
+      - name: Verify Light x64 package and checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          dmgs=(apps/desktop/release/*.dmg)
+          zips=(apps/desktop/release/*.zip)
+          if (( ${#dmgs[@]} == 0 || ${#zips[@]} == 0 )); then
+            echo "Expected both DMG and ZIP artifacts" >&2
+            find apps/desktop/release -maxdepth 2 -type f -print >&2 || true
+            exit 1
+          fi
+
+          extract="$RUNNER_TEMP/hermes-light-x64"
+          mkdir -p "$extract"
+          ditto -x -k "${zips[0]}" "$extract"
+          executable="$(find "$extract" -path '*.app/Contents/MacOS/*' -type f -perm -111 | head -n 1)"
+          if [[ -z "$executable" ]]; then
+            echo "No executable found inside the app bundle" >&2
+            exit 1
+          fi
+
+          file "$executable"
+          archs="$(lipo -archs "$executable")"
+          echo "Architectures: $archs"
+          grep -qw x86_64 <<<"$archs"
+
+          if unzip -l "${zips[0]}" | grep -q 'agent-payload'; then
+            echo "Light package unexpectedly contains a local agent payload" >&2
+            exit 1
+          fi
+
+          (
+            cd apps/desktop/release
+            shasum -a 256 -- *.dmg *.zip > SHA256SUMS.txt
+          )
+          cat apps/desktop/release/SHA256SUMS.txt
+
+      - name: Upload unsigned Intel artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: hermes-desktop-light-macos-x64-unsigned
+          path: |
+            apps/desktop/release/*.dmg
+            apps/desktop/release/*.zip
+            apps/desktop/release/SHA256SUMS.txt
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
